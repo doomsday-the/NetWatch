@@ -1067,7 +1067,60 @@ def get_top_talkers(
         cursor = conn.cursor()
         cursor.execute(sql, (cutoff, limit))
         rows = cursor.fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            ip = str(d.get("ip") or "").strip()
+            hostname = d.get("hostname")
+            vendor = d.get("vendor")
+
+            # Enrich hostname and vendor if not already present in device inventory
+            if not hostname or str(hostname).lower() in ("none", "unknown", ""):
+                if ip in ("10.173.221.202", getattr(settings, "resolved_gateway", "10.173.221.202")):
+                    hostname = "Phone Hotspot (Gateway)"
+                    vendor = "Mobile Hotspot Gateway"
+                elif ip in ("10.173.221.31", getattr(settings, "resolved_ip", "10.173.221.31")):
+                    hostname = "ZEREF (Workstation)"
+                    vendor = "Local Workstation (Host)"
+                elif ip.startswith("10.173.221."):
+                    hostname = f"Subnet Host ({ip})"
+                    vendor = "Local Subnet Device"
+                elif ":" in ip:  # IPv6 address
+                    ip_lower = ip.lower()
+                    if ip_lower.startswith("2603:"):
+                        hostname = "Microsoft Azure / Teams Cloud"
+                        vendor = "Microsoft Corporation"
+                    elif ip_lower.startswith("2001:4860:"):
+                        hostname = "Google Services / Cloud"
+                        vendor = "Google LLC"
+                    elif ip_lower.startswith("64:ff9b::"):
+                        hostname = "NAT64 Carrier Gateway (CDN)"
+                        vendor = "Mobile Cellular ISP"
+                    elif ip_lower.startswith("2402:"):
+                        hostname = "Cellular ISP Access Node"
+                        vendor = "Mobile Network Operator"
+                    else:
+                        hostname = "External IPv6 Internet Host"
+                        vendor = "Public Internet"
+                else:  # IPv4 external
+                    if ip.startswith(("8.8.", "142.250.", "172.217.")):
+                        hostname = "Google Services / 8.8.8.8"
+                        vendor = "Google LLC"
+                    elif ip.startswith(("1.1.1.", "1.0.0.")):
+                        hostname = "Cloudflare DNS / Services"
+                        vendor = "Cloudflare, Inc."
+                    elif ip.startswith(("20.", "40.", "52.")):
+                        hostname = "Microsoft Cloud / Windows Services"
+                        vendor = "Microsoft Corporation"
+                    else:
+                        hostname = f"External Cloud Host ({ip})"
+                        vendor = "Public Internet"
+
+            d["hostname"] = hostname
+            d["vendor"] = vendor
+            d["host"] = ip  # Support both t.host and t.ip
+            result.append(d)
+        return result
     finally:
         conn.close()
 
@@ -1172,6 +1225,58 @@ def cleanup_old_records(
 
     logger.info("Purged records older than %.1f hours: %s", hours, purged)
     return purged
+
+
+
+
+def reset_database_tables(clear_devices: bool = True, db_path: Optional[str] = None) -> Dict[str, int]:
+    """Purge telemetry tables and optionally device inventory to return to a clean slate.
+
+    Args:
+        clear_devices: If True, also purges the device_inventory table.
+        db_path: Optional SQLite database file path.
+
+    Returns:
+        Dictionary mapping table name to number of deleted rows.
+    """
+    purged: Dict[str, int] = {}
+    with get_db_context(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM packet_flows")
+        purged["packet_flows"] = cursor.rowcount
+
+        cursor.execute("DELETE FROM traffic_metrics")
+        purged["traffic_metrics"] = cursor.rowcount
+
+        cursor.execute("DELETE FROM health_history")
+        purged["health_history"] = cursor.rowcount
+
+        cursor.execute("DELETE FROM ai_alerts")
+        purged["ai_alerts"] = cursor.rowcount
+
+        if clear_devices:
+            cursor.execute("DELETE FROM device_inventory")
+            purged["device_inventory"] = cursor.rowcount
+
+    logger.info("Database reset completed: %s", purged)
+    return purged
+
+
+def baseline_all_devices(db_path: Optional[str] = None) -> int:
+    """Mark all currently registered devices as known / trusted.
+
+    Args:
+        db_path: Optional SQLite database file path.
+
+    Returns:
+        Number of device rows updated.
+    """
+    with get_db_context(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE device_inventory SET is_known = 1")
+        count = cursor.rowcount
+    logger.info("Marked %d devices as known baseline", count)
+    return count
 
 
 def main() -> None:

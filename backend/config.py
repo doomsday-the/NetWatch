@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -74,17 +75,17 @@ class Settings(BaseSettings):
 
     # Discovery Service Settings
     discovery_interval_seconds: float = Field(
-        default=30.0,
+        default=8.0,
         validation_alias=AliasChoices("NETWATCH_DISCOVERY_INTERVAL", "NETWATCH_DISCOVERY_INTERVAL_SECONDS", "discovery_interval_seconds"),
-        description="Interval in seconds between ARP discovery sweeps (default: 30s)",
+        description="Interval in seconds between ARP discovery sweeps (default: 8s)",
     )
     arp_timeout_seconds: float = Field(
-        default=2.0,
+        default=1.2,
         validation_alias=AliasChoices("NETWATCH_ARP_TIMEOUT", "NETWATCH_ARP_TIMEOUT_SECONDS", "arp_timeout_seconds"),
         description="Timeout in seconds for Scapy ARP sweep responses",
     )
     dns_timeout_seconds: float = Field(
-        default=0.8,
+        default=0.4,
         validation_alias=AliasChoices("NETWATCH_DNS_TIMEOUT", "dns_timeout_seconds"),
         description="Timeout in seconds for reverse DNS resolution per IP",
     )
@@ -180,7 +181,7 @@ class Settings(BaseSettings):
         description="Cooldown duration in seconds to suppress duplicate alert spam per IP and type",
     )
     anomaly_threshold: float = Field(
-        default=0.70,
+        default=0.82,
         validation_alias=AliasChoices("NETWATCH_ANOMALY_THRESHOLD", "NETWATCH_ML_SCORE_THRESHOLD", "anomaly_threshold"),
         description="Minimum anomaly score (0.0 - 1.0) to register an AI alert",
     )
@@ -197,22 +198,22 @@ class Settings(BaseSettings):
 
     # Heuristic Rule-Based Threat Detection Thresholds
     rule_port_scan_threshold: int = Field(
-        default=25,
+        default=100,
         validation_alias=AliasChoices("NETWATCH_RULE_PORT_SCAN_THRESHOLD", "rule_port_scan_threshold"),
         description="Unique destination ports threshold to trigger port_scan alert",
     )
     rule_port_scan_high_threshold: int = Field(
-        default=75,
+        default=250,
         validation_alias=AliasChoices("NETWATCH_RULE_PORT_SCAN_HIGH", "rule_port_scan_high_threshold"),
         description="Unique destination ports threshold for high severity port_scan",
     )
     rule_syn_flood_count: int = Field(
-        default=80,
+        default=200,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_COUNT", "rule_syn_flood_count"),
         description="TCP SYN count threshold to trigger syn_flood alert",
     )
     rule_syn_flood_ratio: float = Field(
-        default=0.70,
+        default=0.85,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_RATIO", "rule_syn_flood_ratio"),
         description="SYN-to-TCP ratio threshold to trigger syn_flood alert",
     )
@@ -222,7 +223,7 @@ class Settings(BaseSettings):
         description="TCP SYN count threshold for high severity syn_flood",
     )
     rule_icmp_flood_count: int = Field(
-        default=100,
+        default=150,
         validation_alias=AliasChoices("NETWATCH_RULE_ICMP_COUNT", "rule_icmp_flood_count"),
         description="ICMP packet count threshold to trigger icmp_flood alert",
     )
@@ -251,25 +252,23 @@ class Settings(BaseSettings):
 
     # Cached network discovery
     _cached_net_info: Optional[Any] = None
+    _cached_net_info_time: float = 0.0
 
-    def get_network_info(self, refresh: bool = False) -> Any:
-        """Retrieve or detect network configuration dynamically.
-
-        Args:
-            refresh: If True, bypass cached network information and re-detect.
-
-        Returns:
-            NetworkInfo object with interface, ip, subnet, gateway, etc.
-        """
+    def get_network_info(self, refresh: bool = False, max_age_seconds: float = 10.0) -> Any:
         # Lazy import to avoid circular dependency
         from backend.discovery import detect_network_info
-
-        if self._cached_net_info is None or refresh:
+        now = time.time()
+        if (
+            self._cached_net_info is None
+            or refresh
+            or (now - self._cached_net_info_time > max_age_seconds)
+        ):
             self._cached_net_info = detect_network_info(
                 interface_name=self.interface if self.interface.lower() != "auto" else None,
                 subnet_override=self.subnet if self.subnet.lower() != "auto" else None,
                 gateway_override=self.gateway_ip if self.gateway_ip.lower() != "auto" else None,
             )
+            self._cached_net_info_time = now
         return self._cached_net_info
 
     @property

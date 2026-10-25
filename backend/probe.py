@@ -149,6 +149,35 @@ class GatewayProbeService:
         success = rtt is not None
         self.history.append((rtt, success))
 
+        # Track consecutive failures and adapt dynamically
+        if not success:
+            self._consecutive_fails = getattr(self, "_consecutive_fails", 0) + 1
+        else:
+            self._consecutive_fails = 0
+
+        # After consecutive timeouts or every 10 probes, check if network/gateway changed
+        probe_count = getattr(self, "_probe_count", 0) + 1
+        self._probe_count = probe_count
+
+        if self._consecutive_fails >= 3 or (probe_count % 10 == 0):
+            try:
+                current_gw = settings.get_network_info(refresh=True).gateway
+                if current_gw and current_gw != self.target_ip:
+                    logger.warning("Gateway change detected: %s -> %s", self.target_ip, current_gw)
+                    self.target_ip = current_gw
+                    self.history.clear()
+                    self._consecutive_fails = 0
+                elif self._consecutive_fails >= 5 and self.target_ip != "1.1.1.1":
+                    # Gateway may block ICMP ping (common on mobile hotspots); test Internet fallback
+                    fallback_rtt = ping_host_system("1.1.1.1", timeout_seconds=1.0)
+                    if fallback_rtt is not None:
+                        logger.warning("Gateway %s drops ICMP; switching latency probe to 1.1.1.1", self.target_ip)
+                        self.target_ip = "1.1.1.1"
+                        self.history.clear()
+                        self._consecutive_fails = 0
+            except Exception as e:
+                logger.debug("Gateway re-detection error: %s", e)
+
         # Calculate rolling statistics
         total = len(self.history)
         failed = sum(1 for _, ok in self.history if not ok)

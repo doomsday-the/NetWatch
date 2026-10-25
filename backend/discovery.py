@@ -586,6 +586,42 @@ def run_discovery_sweep(
         vendor = lookup_vendor(mac, oui)
         hostname = hostnames.get(ip)
 
+        # Intelligent classification for local workstation and mobile hotspot gateway
+        is_gw = (ip == network.gateway) or (ip == getattr(settings, "resolved_gateway", None))
+        is_local = (ip == network.ip) or (mac == network.mac)
+
+        # Check if MAC has locally administered / randomized bit set (common on mobile phones/hotspots)
+        cleaned_mac = re.sub(r"[^0-9A-Fa-f]", "", mac)
+        is_private_mac = False
+        if len(cleaned_mac) >= 2:
+            try:
+                first_byte = int(cleaned_mac[:2], 16)
+                if (first_byte & 0x02) != 0:
+                    is_private_mac = True
+            except Exception:
+                pass
+
+        if is_local:
+            if not hostname or str(hostname).lower() in ("none", "unknown"):
+                hostname = socket.gethostname() or "Local Host"
+            if vendor in ("Unknown", None, ""):
+                vendor = "Local Workstation (Host)"
+        elif is_gw:
+            if not hostname or str(hostname).lower() in ("none", "unknown"):
+                hostname = "Phone Hotspot (Gateway)"
+            if vendor in ("Unknown", None, ""):
+                vendor = "Mobile Hotspot Gateway"
+        elif is_private_mac:
+            if not hostname or str(hostname).lower() in ("none", "unknown"):
+                hostname = f"Mobile Device ({ip})"
+            if vendor in ("Unknown", None, ""):
+                vendor = "Mobile Device (Private MAC)"
+        else:
+            if not hostname or str(hostname).lower() in ("none", "unknown"):
+                hostname = f"Connected Device ({ip})"
+            if vendor in ("Unknown", None, ""):
+                vendor = "Network Client Device"
+
         if mac in existing_devices:
             # Existing device: preserve baseline is_known flag and first_seen timestamp
             existing_record = existing_devices[mac]
@@ -716,6 +752,13 @@ def run_discovery_loop(
     while _RUNNING:
         sweep_start = time.time()
         try:
+            current_net = settings.get_network_info(refresh=True)
+            if current_net.subnet != net_info.subnet or current_net.interface != net_info.interface:
+                logger.warning(
+                    "Network change detected in discovery: %s (%s) -> %s (%s)",
+                    net_info.subnet, net_info.interface, current_net.subnet, current_net.interface
+                )
+                net_info = current_net
             run_discovery_sweep(net_info=net_info, oui_table=oui_table, force_no_baseline=force_no_baseline)
         except Exception as exc:
             logger.error("Error encountered during discovery sweep: %s", exc, exc_info=True)

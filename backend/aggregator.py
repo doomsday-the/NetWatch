@@ -243,6 +243,17 @@ class TrafficAggregatorService:
             Number of packet flow rows successfully aggregated.
         """
         # Read new flows since last watermark
+        # Periodically refresh LAN subnet if network changed
+        if not hasattr(self, "_last_subnet_check") or time.time() - self._last_subnet_check >= 15.0:
+            self._last_subnet_check = time.time()
+            try:
+                new_sub = settings.get_network_info(refresh=False).subnet
+                if not self.lan_subnet or str(self.lan_subnet) != new_sub:
+                    self.lan_subnet = ipaddress.IPv4Network(new_sub, strict=False)
+                    logger.info("Aggregator dynamically updated LAN subnet to: %s", self.lan_subnet)
+            except Exception:
+                pass
+
         flows = get_unprocessed_packet_flows(
             last_id=self.last_processed_id,
             limit=25000,
