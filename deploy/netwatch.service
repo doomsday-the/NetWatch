@@ -1,0 +1,26 @@
+[Unit]
+Description=NetWatch AI Network Monitoring and Anomaly Detection Daemon
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory={{PROJECT_ROOT}}
+ExecStart={{PYTHON_BIN}} -m backend.run_all
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netwatch
+
+# Security hardening allowances for packet sniffing
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
