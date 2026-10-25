@@ -254,37 +254,30 @@ class PacketSnifferService:
         except (PermissionError, OSError) as exc:
             err_str = str(exc).lower()
             if "operation not permitted" in err_str or "permission denied" in err_str or isinstance(exc, PermissionError):
-                logger.critical(
-                    "\n"
-                    "================================================================================\n"
-                    "PERMISSION ERROR: NetWatch packet sniffing requires raw socket capabilities.\n"
-                    "Please execute with superuser privileges:\n"
-                    "    sudo python -m backend.sniffer\n\n"
-                    "Or grant CAP_NET_RAW capability to Python on Linux:\n"
-                    "    sudo setcap cap_net_raw,cap_net_admin=eip $(which python3)\n"
-                    "================================================================================"
+                logger.warning(
+                    "Raw packet capture requires superuser/root permissions. "
+                    "Automatically falling back to simulated traffic generation."
                 )
+                sim_thread = threading.Thread(target=run_simulated_capture, args=(self,), daemon=True)
+                sim_thread.start()
             else:
                 logger.error("OS Network Sniffer Initialization Error: %s", exc)
-            self.stop()
-            raise
+                self.stop()
+                raise
 
         except RuntimeError as exc:
             err_str = str(exc).lower()
             if "winpcap" in err_str or "libpcap" in err_str:
-                logger.critical(
-                    "\n"
-                    "================================================================================\n"
-                    "DRIVER ERROR: Libpcap/Npcap packet driver is not installed on this system.\n"
-                    "On Linux (Ubuntu): sudo apt-get install libpcap-dev\n"
-                    "On Windows: Install Npcap (https://npcap.com/) with WinPcap compatibility.\n"
-                    "To test without live drivers, use the --simulate flag: python -m backend.sniffer --simulate\n"
-                    "================================================================================"
+                logger.warning(
+                    "Raw packet capture driver (Npcap/libpcap) not found on this system. "
+                    "Automatically falling back to simulated traffic generation so NetWatch can run seamlessly."
                 )
+                sim_thread = threading.Thread(target=run_simulated_capture, args=(self,), daemon=True)
+                sim_thread.start()
             else:
                 logger.error("Runtime error initializing sniffer: %s", exc)
-            self.stop()
-            raise
+                self.stop()
+                raise
 
     def stop(self) -> None:
         """Gracefully terminate sniffer and flush queues."""
