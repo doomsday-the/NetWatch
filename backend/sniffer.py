@@ -237,6 +237,18 @@ class PacketSnifferService:
         # Launch Scapy AsyncSniffer
         try:
             import scapy.all as scapy  # type: ignore
+            from scapy.config import conf
+
+            # Check if live packet capture provider (Npcap/libpcap) is available
+            if not getattr(conf, "use_pcap", True):
+                logger.warning(
+                    "Raw packet capture driver (Npcap/libpcap) not detected (conf.use_pcap is False). "
+                    "Activating synthetic traffic generator to simulate real-time network throughput."
+                )
+                self.simulated = True
+                sim_thread = threading.Thread(target=run_simulated_capture, args=(self,), daemon=True)
+                sim_thread.start()
+                return
 
             sniffer_kwargs: Dict[str, Any] = {
                 "iface": self.interface,
@@ -307,37 +319,55 @@ def run_simulated_capture(service: PacketSnifferService) -> None:
     import scapy.all as scapy  # type: ignore
 
     logger.info("Starting simulated traffic generation for testing sniffer pipeline...")
-    sample_ips = ["192.168.1.10", "192.168.1.20", "192.168.1.55", "8.8.8.8", "1.1.1.1", "142.250.190.46"]
+    local_ip = settings.resolved_ip or "172.17.48.6"
+    gateway_ip = settings.resolved_gateway or "172.17.48.1"
+
+    # Active LAN hosts
+    lan_hosts = [local_ip, gateway_ip, "172.17.48.15", "172.17.48.22", "172.17.48.33"]
+    # Remote WAN internet hosts
+    wan_hosts = ["8.8.8.8", "1.1.1.1", "142.250.190.46", "157.240.22.35", "104.244.42.1", "13.107.42.14"]
     sample_ports = [80, 443, 53, 22, 8080, 3306, 5432]
-    flags_list = ["S", "SA", "PA", "FA", "R", "A"]
+    flags_list = ["PA", "A", "SA", "FA", "S"]
 
     while not service.stop_event.is_set():
-        src = random.choice(sample_ips)
-        dst = random.choice(sample_ips)
-        if src == dst:
-            dst = "8.8.4.4"
+        # Mix of download (WAN -> LAN) and upload (LAN -> WAN)
+        if random.random() < 0.65:
+            # Ingress / Download
+            src = random.choice(wan_hosts)
+            dst = random.choice(lan_hosts)
+            payload_len = random.randint(300, 1420)
+        else:
+            # Egress / Upload
+            src = random.choice(lan_hosts)
+            dst = random.choice(wan_hosts)
+            payload_len = random.randint(100, 800)
 
         proto_choice = random.random()
-        if proto_choice < 0.65:
+        payload = b"X" * payload_len
+
+        if proto_choice < 0.70:
             # TCP
             pkt = scapy.IP(src=src, dst=dst) / scapy.TCP(
                 sport=random.randint(1024, 65535),
                 dport=random.choice(sample_ports),
                 flags=random.choice(flags_list),
-            )
-        elif proto_choice < 0.85:
+            ) / scapy.Raw(load=payload)
+        elif proto_choice < 0.88:
             # UDP / DNS
-            dport = 53 if random.random() < 0.4 else random.choice(sample_ports)
-            pkt = scapy.IP(src=src, dst=dst) / scapy.UDP(sport=random.randint(1024, 65535), dport=dport)
-        elif proto_choice < 0.95:
+            dport = 53 if random.random() < 0.3 else random.choice(sample_ports)
+            pkt = scapy.IP(src=src, dst=dst) / scapy.UDP(
+                sport=random.randint(1024, 65535),
+                dport=dport,
+            ) / scapy.Raw(load=payload[:256])
+        elif proto_choice < 0.96:
             # ICMP
-            pkt = scapy.IP(src=src, dst=dst) / scapy.ICMP()
+            pkt = scapy.IP(src=src, dst=dst) / scapy.ICMP() / scapy.Raw(load=b"ping" * 8)
         else:
             # ARP
             pkt = scapy.ARP(psrc=src, pdst=dst)
 
         service._packet_callback(pkt)
-        time.sleep(random.uniform(0.01, 0.08))
+        time.sleep(random.uniform(0.02, 0.05))
 
 
 def main() -> None:
