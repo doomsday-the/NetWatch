@@ -369,7 +369,3 @@ tests/test_rules.py::test_multi_attack_window PASSED                     [100%]
   ```
 
 ---
-
-## License
-
-This project is licensed under the MIT License.
