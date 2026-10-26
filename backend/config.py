@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         description="Mark all devices discovered during initial sweep as is_known=1 (baseline)",
     )
     offline_threshold_sweeps: int = Field(
-        default=2,
+        default=4,
         validation_alias=AliasChoices("NETWATCH_OFFLINE_THRESHOLD_SWEEPS", "offline_threshold_sweeps"),
         description="Number of missed sweeps before marking an online device as offline (default: 2)",
     )
@@ -208,17 +208,17 @@ class Settings(BaseSettings):
         description="Unique destination ports threshold for high severity port_scan",
     )
     rule_syn_flood_count: int = Field(
-        default=60,
+        default=30,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_COUNT", "rule_syn_flood_count"),
         description="TCP SYN count threshold to trigger syn_flood alert",
     )
     rule_syn_flood_ratio: float = Field(
-        default=0.70,
+        default=0.20,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_RATIO", "rule_syn_flood_ratio"),
         description="SYN-to-TCP ratio threshold to trigger syn_flood alert",
     )
     rule_syn_flood_high_count: int = Field(
-        default=150,
+        default=45,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_HIGH_COUNT", "rule_syn_flood_high_count"),
         description="TCP SYN count threshold for high severity syn_flood",
     )
@@ -233,14 +233,14 @@ class Settings(BaseSettings):
         description="ICMP packet count threshold for high severity icmp_flood",
     )
     rule_bandwidth_hog_bytes: int = Field(
-        default=2_000_000,
+        default=20_000_000,
         validation_alias=AliasChoices("NETWATCH_RULE_BANDWIDTH_BYTES", "rule_bandwidth_hog_bytes"),
-        description="Bytes transmitted threshold in 5s window to trigger bandwidth_hog alert (~6.4 Mbps)",
+        description="Bytes transmitted threshold in 5s window to trigger bandwidth_hog alert (~32 Mbps)",
     )
     rule_bandwidth_hog_high_bytes: int = Field(
-        default=15_000_000,
+        default=50_000_000,
         validation_alias=AliasChoices("NETWATCH_RULE_BANDWIDTH_HIGH_BYTES", "rule_bandwidth_hog_high_bytes"),
-        description="Bytes transmitted threshold for high severity bandwidth_hog (~24 Mbps)",
+        description="Bytes transmitted threshold for high severity bandwidth_hog (~80 Mbps)",
     )
 
     # Logging

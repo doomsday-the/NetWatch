@@ -44,6 +44,7 @@ COLORS = {
     "PROBE": "\033[35m",       # Magenta
     "DETECTOR": "\033[33m",    # Yellow
     "DISCOVERY": "\033[37m",   # White
+    "HEALTH": "\033[92m",      # Bright Green
     "SYSTEM": "\033[1;31m",    # Bold Red
     "RESET": "\033[0m",
 }
@@ -161,6 +162,10 @@ class NetWatchSupervisor:
         # 6. ML Anomaly & Threat Detector
         det_cmd = [py, "-m", "backend.ml.detector"]
         self.services["DETECTOR"] = ManagedService("DETECTOR", det_cmd, COLORS["DETECTOR"])
+
+        # 7. Network Health Monitor
+        health_cmd = [py, "-m", "backend.ml.health", "--interval", "5.0"]
+        self.services["HEALTH"] = ManagedService("HEALTH", health_cmd, COLORS["HEALTH"])
 
     def start_all(self) -> None:
         """Initialize database and launch all services."""

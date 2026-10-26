@@ -31,6 +31,7 @@ import psutil
 
 from backend.config import settings
 from backend.db import (
+    get_connection,
     get_device_mac_map,
     insert_ai_alerts_batch,
     mark_devices_offline,
@@ -685,8 +686,25 @@ def run_discovery_sweep(
     if alerts_to_insert:
         insert_ai_alerts_batch(alerts_to_insert)
 
-    # 6. Mark devices not seen for 2 sweeps as offline
-    # A device is offline if last_seen < now - (threshold * interval)
+    # 5.5 Refresh last_seen for devices with active packet traffic in the last 180s
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT src_ip FROM traffic_metrics WHERE ts >= ? AND bytes_out > 0", (now - 30.0,))
+        active_traffic_ips = [r[0] for r in cur.fetchall() if r[0]]
+        if active_traffic_ips:
+            placeholders = ",".join("?" * len(active_traffic_ips))
+            cur.execute(
+                f"UPDATE device_inventory SET last_seen = ?, status = 'online' WHERE ip IN ({placeholders})",
+                (now, *active_traffic_ips),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("Failed refreshing active traffic device status: %s", exc)
+    finally:
+        conn.close()
+
+    # 6. Mark devices not seen for offline_threshold_sweeps as offline
     offline_cutoff = now - (settings.offline_threshold_sweeps * settings.discovery_interval_seconds)
     marked_offline = mark_devices_offline(offline_cutoff)
 
