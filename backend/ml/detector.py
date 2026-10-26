@@ -275,17 +275,18 @@ class AnomalyDetectorService:
                 }
                 verdict = verify_anomaly_with_gemini(alert_item, net_ctx)
                 if not verdict.get("is_genuine_attack", True):
-                    logger.info(
-                        "Gemini AI identified traffic as benign (%s): %s",
-                        verdict.get("classification"),
-                        verdict.get("reasoning")
-                    )
-                    continue
-                else:
-                    # Enrich alert details with Gemini verdict
-                    dt = json.loads(alert_item.get("details_json", "{}"))
-                    dt["gemini_analysis"] = verdict
-                    alert_item["details_json"] = json.dumps(dt)
+                    # Only suppress if it's from the gateway/local machine or a generic statistical anomaly
+                    if a_type == "anomaly" or s_ip in (gw_ip, my_ip):
+                        logger.info(
+                            "Gemini AI identified traffic as benign (%s): %s",
+                            verdict.get("classification"),
+                            verdict.get("reasoning")
+                        )
+                        continue
+                # Enrich alert details with Gemini verdict
+                dt = json.loads(alert_item.get("details_json", "{}"))
+                dt["gemini_analysis"] = verdict
+                alert_item["details_json"] = json.dumps(dt)
             except Exception as e:
                 logger.debug("Gemini triage fallback: %s", e)
 

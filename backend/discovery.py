@@ -205,9 +205,10 @@ def detect_network_info(
     if target_addrs:
         for addr in target_addrs:
             if addr.family == socket.AF_INET:
-                ip = addr.address
-                if addr.netmask:
-                    netmask = addr.netmask
+                if not addr.address.startswith("169.254.") or ip == "127.0.0.1":
+                    ip = addr.address
+                    if addr.netmask:
+                        netmask = addr.netmask
             elif hasattr(psutil, "AF_LINK") and addr.family == psutil.AF_LINK:
                 mac = addr.address
             elif addr.family.name in ("AF_LINK", "AF_PACKET"):

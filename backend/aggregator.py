@@ -328,7 +328,7 @@ class TrafficAggregatorService:
 
         # Initialize watermark to current max ID if starting fresh
         if self.last_processed_id == 0:
-            self.last_processed_id = 0
+            self.last_processed_id = max(0, get_max_packet_flow_id(self.db_path) - 5000)
 
         while not self.stop_requested:
             start_t = time.time()

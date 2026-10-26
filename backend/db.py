@@ -299,17 +299,17 @@ def upsert_traffic_metrics_batch(
         :unique_dst_ports, :unique_dst_ips, :latency_ms, :loss_pct
     )
     ON CONFLICT(ts) WHERE src_ip IS NULL DO UPDATE SET
-        bytes_out = excluded.bytes_out,
-        bytes_in = excluded.bytes_in,
-        pps = excluded.pps,
-        tcp_count = excluded.tcp_count,
-        udp_count = excluded.udp_count,
-        icmp_count = excluded.icmp_count,
-        dns_count = excluded.dns_count,
-        other_count = excluded.other_count,
-        syn_count = excluded.syn_count,
-        unique_dst_ports = excluded.unique_dst_ports,
-        unique_dst_ips = excluded.unique_dst_ips,
+        bytes_out = traffic_metrics.bytes_out + excluded.bytes_out,
+        bytes_in = traffic_metrics.bytes_in + excluded.bytes_in,
+        pps = traffic_metrics.pps + excluded.pps,
+        tcp_count = traffic_metrics.tcp_count + excluded.tcp_count,
+        udp_count = traffic_metrics.udp_count + excluded.udp_count,
+        icmp_count = traffic_metrics.icmp_count + excluded.icmp_count,
+        dns_count = traffic_metrics.dns_count + excluded.dns_count,
+        other_count = traffic_metrics.other_count + excluded.other_count,
+        syn_count = traffic_metrics.syn_count + excluded.syn_count,
+        unique_dst_ports = MAX(traffic_metrics.unique_dst_ports, excluded.unique_dst_ports),
+        unique_dst_ips = MAX(traffic_metrics.unique_dst_ips, excluded.unique_dst_ips),
         latency_ms = COALESCE(traffic_metrics.latency_ms, excluded.latency_ms),
         loss_pct = COALESCE(traffic_metrics.loss_pct, excluded.loss_pct)
     """
@@ -325,17 +325,17 @@ def upsert_traffic_metrics_batch(
         :unique_dst_ports, :unique_dst_ips, :latency_ms, :loss_pct
     )
     ON CONFLICT(ts, src_ip) WHERE src_ip IS NOT NULL DO UPDATE SET
-        bytes_out = excluded.bytes_out,
-        bytes_in = excluded.bytes_in,
-        pps = excluded.pps,
-        tcp_count = excluded.tcp_count,
-        udp_count = excluded.udp_count,
-        icmp_count = excluded.icmp_count,
-        dns_count = excluded.dns_count,
-        other_count = excluded.other_count,
-        syn_count = excluded.syn_count,
-        unique_dst_ports = excluded.unique_dst_ports,
-        unique_dst_ips = excluded.unique_dst_ips
+        bytes_out = traffic_metrics.bytes_out + excluded.bytes_out,
+        bytes_in = traffic_metrics.bytes_in + excluded.bytes_in,
+        pps = traffic_metrics.pps + excluded.pps,
+        tcp_count = traffic_metrics.tcp_count + excluded.tcp_count,
+        udp_count = traffic_metrics.udp_count + excluded.udp_count,
+        icmp_count = traffic_metrics.icmp_count + excluded.icmp_count,
+        dns_count = traffic_metrics.dns_count + excluded.dns_count,
+        other_count = traffic_metrics.other_count + excluded.other_count,
+        syn_count = traffic_metrics.syn_count + excluded.syn_count,
+        unique_dst_ports = MAX(traffic_metrics.unique_dst_ports, excluded.unique_dst_ports),
+        unique_dst_ips = MAX(traffic_metrics.unique_dst_ips, excluded.unique_dst_ips)
     """
 
     network_rows = [{**DEFAULT_METRIC_FIELDS, **m} for m in metrics if m.get("src_ip") is None]

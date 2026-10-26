@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import collections
 import ipaddress
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -24,29 +25,49 @@ from backend.gemini_service import verify_anomaly_with_gemini
 
 logger = logging.getLogger(__name__)
 
+def get_all_local_ips() -> set[str]:
+    import psutil
+    ips = {"127.0.0.1", "::1", "0.0.0.0"}
+    for iface, addrs in psutil.net_if_addrs().items():
+        for a in addrs:
+            if a.address:
+                ips.add(a.address.lower())
+    return ips
 
-def check_syn_flood_audit(minutes: float = 1.0, db_path: Optional[str] = None) -> Dict[str, Any]:
-    """Audit network flows for instantaneous active TCP SYN flooding attacks.
 
-    Evaluates recent 30-60 second traffic rate to distinguish active DoS floods
-    from routine web browsing handshakes.
-    """
+
+def check_syn_flood_audit(minutes: float = 10.0, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """Audit network flows for active TCP SYN flooding attacks."""
     cutoff = time.time() - (minutes * 60.0)
     net_info = settings.get_network_info(refresh=False)
-    my_ip = net_info.ip
+    gw_ip = net_info.gateway
+    local_ips = get_all_local_ips()
 
     conn = get_connection(db_path)
     try:
         cursor = conn.cursor()
-        # Look for hosts generating rapid burst of unacknowledged SYNs in the current window
+
+        # 1. Correlate with active / unresolved alerts in ai_alerts
+        cursor.execute(
+            """
+            SELECT id, alert_type, src_ip, severity, score, message, ts, details_json
+            FROM ai_alerts
+            WHERE alert_type = 'syn_flood' AND (acknowledged = 0 OR ts >= ?)
+            ORDER BY ts DESC LIMIT 5
+            """,
+            (cutoff,),
+        )
+        recent_alerts = [dict(r) for r in cursor.fetchall()]
+
+        # 2. Correlate with traffic_metrics
         cursor.execute(
             """
             SELECT src_ip, SUM(syn_count) as total_syn, SUM(tcp_count) as total_tcp,
                    MAX(pps) as peak_pps
-            FROM traffic_metrics
+            FROM traffic_metrics INDEXED BY idx_traffic_metrics_ts
             WHERE ts >= ? AND src_ip IS NOT NULL AND src_ip != ''
             GROUP BY src_ip
-            HAVING total_syn >= 150
+            HAVING total_syn >= 40
             ORDER BY total_syn DESC
             """,
             (cutoff,),
@@ -57,11 +78,10 @@ def check_syn_flood_audit(minutes: float = 1.0, db_path: Optional[str] = None) -
         for r in rows:
             src_ip, total_syn, total_tcp, peak_pps = r[0], r[1], r[2], r[3]
             ratio = (total_syn / total_tcp) if total_tcp and total_tcp > 0 else 1.0
-            # Exclude local client unless sustained flood (> 300 SYNs/min with 90%+ ratio)
-            if src_ip == my_ip and (total_syn < 300 or ratio < 0.90):
+            if src_ip.lower() in local_ips or src_ip.startswith("169.254.") or (gw_ip and src_ip == gw_ip):
                 continue
 
-            if total_syn >= 200 and ratio >= 0.85 and (peak_pps or 0) >= 40:
+            if total_syn >= settings.rule_syn_flood_count and ratio >= 0.65:
                 suspects.append({
                     "src_ip": src_ip,
                     "syn_packets": total_syn,
@@ -70,27 +90,24 @@ def check_syn_flood_audit(minutes: float = 1.0, db_path: Optional[str] = None) -
                     "peak_pps": round(peak_pps or 0, 1),
                 })
 
-        if suspects:
-            top = suspects[0]
-            # Verify with Gemini
-            net_ctx = {"ip": net_info.ip, "gateway": net_info.gateway, "subnet": net_info.subnet, "interface": net_info.interface}
-            candidate = {"src_ip": top["src_ip"], "alert_type": "syn_flood", "details": top, "message": f"{top['syn_packets']} unacknowledged SYNs"}
-            verdict = verify_anomaly_with_gemini(candidate, net_ctx)
+        if recent_alerts or suspects:
+            top_ip = suspects[0]["src_ip"] if suspects else recent_alerts[0].get("src_ip", "Unknown")
+            is_crit = any(a.get("severity") == "high" for a in recent_alerts) or any(s["syn_packets"] >= 150 for s in suspects)
+            top_msg = recent_alerts[0].get("message") if recent_alerts else f"{suspects[0]['syn_packets']} unacknowledged SYNs ({suspects[0]['syn_ratio']}% ratio)"
 
-            if verdict.get("is_genuine_attack", True):
-                return {
-                    "check": "syn_flood",
-                    "name": "TCP SYN Flood Defense Audit",
-                    "status": "CRITICAL" if top["syn_packets"] > 400 else "WARNING",
-                    "score_penalty": 30 if top["syn_packets"] > 400 else 15,
-                    "summary": f"Active SYN flood attack confirmed from {top['src_ip']} ({top['syn_packets']} unacknowledged SYNs, {top['syn_ratio']}% ratio). {verdict.get('reasoning', '')}",
-                    "details": suspects,
-                    "remediation": {
-                        "windows": f"New-NetFirewallRule -DisplayName 'Block-SYN-Attacker' -Direction Inbound -RemoteAddress {top['host_ip'] if 'host_ip' in top else top['src_ip']} -Action Block",
-                        "linux": f"iptables -A INPUT -s {top['src_ip']} -p tcp --syn -j DROP",
-                        "system": "Enable TCP SYN Cookies: 'netsh interface tcp set global timestamps=enabled' or Linux 'sysctl -w net.ipv4.tcp_syncookies=1'",
-                    },
-                }
+            return {
+                "check": "syn_flood",
+                "name": "TCP SYN Flood Defense Audit",
+                "status": "CRITICAL" if is_crit else "WARNING",
+                "score_penalty": 30 if is_crit else 15,
+                "summary": f"Active TCP SYN flood attack confirmed from {top_ip}: {top_msg}",
+                "details": suspects if suspects else recent_alerts,
+                "remediation": {
+                    "windows": f"New-NetFirewallRule -DisplayName 'Block-SYN-Attacker-{top_ip}' -Direction Inbound -RemoteAddress {top_ip} -Action Block",
+                    "linux": f"iptables -A INPUT -s {top_ip} -p tcp --syn -j DROP",
+                    "system": "Enable TCP SYN Cookies: 'netsh interface tcp set global timestamps=enabled' or Linux 'sysctl -w net.ipv4.tcp_syncookies=1'",
+                },
+            }
 
         return {
             "check": "syn_flood",
@@ -105,7 +122,7 @@ def check_syn_flood_audit(minutes: float = 1.0, db_path: Optional[str] = None) -
         conn.close()
 
 
-def check_port_scan_audit(minutes: float = 1.0, db_path: Optional[str] = None) -> Dict[str, Any]:
+def check_port_scan_audit(minutes: float = 10.0, db_path: Optional[str] = None) -> Dict[str, Any]:
     """Audit network flows for vertical and horizontal port scanning."""
     cutoff = time.time() - (minutes * 60.0)
     net_info = settings.get_network_info(refresh=False)
@@ -114,25 +131,39 @@ def check_port_scan_audit(minutes: float = 1.0, db_path: Optional[str] = None) -
     conn = get_connection(db_path)
     try:
         cursor = conn.cursor()
+
+        # 1. Correlate with active / unresolved alerts in ai_alerts
+        cursor.execute(
+            """
+            SELECT id, alert_type, src_ip, severity, score, message, ts, details_json
+            FROM ai_alerts
+            WHERE alert_type = 'port_scan' AND (acknowledged = 0 OR ts >= ?)
+            ORDER BY ts DESC LIMIT 5
+            """,
+            (cutoff,),
+        )
+        recent_alerts = [dict(r) for r in cursor.fetchall()]
+
+        # 2. Correlate with traffic_metrics
         cursor.execute(
             """
             SELECT src_ip, MAX(unique_dst_ports) as max_ports, MAX(unique_dst_ips) as max_ips,
                    SUM(tcp_count + udp_count) as total_packets
-            FROM traffic_metrics
+            FROM traffic_metrics INDEXED BY idx_traffic_metrics_ts
             WHERE ts >= ? AND src_ip IS NOT NULL AND src_ip != ''
             GROUP BY src_ip
-            HAVING max_ports >= 75
+            HAVING max_ports >= 20
             ORDER BY max_ports DESC
             """,
             (cutoff,),
         )
         rows = cursor.fetchall()
 
+        local_ips = get_all_local_ips()
         scanners = []
         for r in rows:
             src_ip, max_ports, max_ips, total_pkts = r[0], r[1], r[2], r[3]
-            # Exclude default router gateway from routine port scan alerts
-            if gw_ip and src_ip == gw_ip and max_ports < 250:
+            if (src_ip.lower() in local_ips or (gw_ip and src_ip == gw_ip) or src_ip.startswith("169.254.")) and max_ports < 250:
                 continue
 
             if max_ports >= settings.rule_port_scan_threshold:
@@ -143,26 +174,24 @@ def check_port_scan_audit(minutes: float = 1.0, db_path: Optional[str] = None) -
                     "packets": total_pkts,
                 })
 
-        if scanners:
-            top = scanners[0]
-            net_ctx = {"ip": net_info.ip, "gateway": net_info.gateway, "subnet": net_info.subnet, "interface": net_info.interface}
-            candidate = {"src_ip": top["src_ip"], "alert_type": "port_scan", "details": top, "message": f"{top['probed_ports']} ports probed"}
-            verdict = verify_anomaly_with_gemini(candidate, net_ctx)
+        if recent_alerts or scanners:
+            top_ip = scanners[0]["src_ip"] if scanners else recent_alerts[0].get("src_ip", "Unknown")
+            is_crit = any(a.get("severity") == "high" for a in recent_alerts) or any(s["probed_ports"] >= 75 for s in scanners)
+            top_msg = recent_alerts[0].get("message") if recent_alerts else f"{scanners[0]['probed_ports']} ports probed"
 
-            if verdict.get("is_genuine_attack", True):
-                return {
-                    "check": "port_scan",
-                    "name": "Port Scanning & Reconnaissance Audit",
-                    "status": "CRITICAL" if top["probed_ports"] >= 200 else "WARNING",
-                    "score_penalty": 25 if top["probed_ports"] >= 200 else 15,
-                    "summary": f"Port reconnaissance confirmed from {top['src_ip']} ({top['probed_ports']} ports probed). {verdict.get('reasoning', '')}",
-                    "details": scanners,
-                    "remediation": {
-                        "windows": f"New-NetFirewallRule -DisplayName 'Block-PortScanner-{top['src_ip']}' -Direction Inbound -RemoteAddress {top['src_ip']} -Action Block",
-                        "linux": f"iptables -I INPUT -s {top['src_ip']} -j DROP",
-                        "system": "Close unused listening ports and filter ICMP port unreachable responses.",
-                    },
-                }
+            return {
+                "check": "port_scan",
+                "name": "Port Scanning & Reconnaissance Audit",
+                "status": "CRITICAL" if is_crit else "WARNING",
+                "score_penalty": 25 if is_crit else 15,
+                "summary": f"Port reconnaissance confirmed from {top_ip}: {top_msg}",
+                "details": scanners if scanners else recent_alerts,
+                "remediation": {
+                    "windows": f"New-NetFirewallRule -DisplayName 'Block-PortScanner-{top_ip}' -Direction Inbound -RemoteAddress {top_ip} -Action Block",
+                    "linux": f"iptables -I INPUT -s {top_ip} -j DROP",
+                    "system": "Close unused listening ports and filter ICMP port unreachable responses.",
+                },
+            }
 
         return {
             "check": "port_scan",
@@ -177,8 +206,8 @@ def check_port_scan_audit(minutes: float = 1.0, db_path: Optional[str] = None) -
         conn.close()
 
 
-def check_icmp_storm_audit(minutes: float = 1.0, db_path: Optional[str] = None) -> Dict[str, Any]:
-    """Audit network flows for ICMP flood and ping storms, filtering monitoring probes."""
+def check_icmp_storm_audit(minutes: float = 10.0, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """Audit network flows for ICMP flood and ping storms."""
     cutoff = time.time() - (minutes * 60.0)
     net_info = settings.get_network_info(refresh=False)
     gw_ip = net_info.gateway
@@ -186,50 +215,64 @@ def check_icmp_storm_audit(minutes: float = 1.0, db_path: Optional[str] = None) 
     conn = get_connection(db_path)
     try:
         cursor = conn.cursor()
+
+        # 1. Correlate with active / unresolved alerts in ai_alerts
+        cursor.execute(
+            """
+            SELECT id, alert_type, src_ip, severity, score, message, ts, details_json
+            FROM ai_alerts
+            WHERE alert_type = 'icmp_flood' AND (acknowledged = 0 OR ts >= ?)
+            ORDER BY ts DESC LIMIT 5
+            """,
+            (cutoff,),
+        )
+        recent_alerts = [dict(r) for r in cursor.fetchall()]
+
+        # 2. Correlate with traffic_metrics
         cursor.execute(
             """
             SELECT src_ip, SUM(icmp_count) as total_icmp, MAX(pps) as peak_pps
-            FROM traffic_metrics
+            FROM traffic_metrics INDEXED BY idx_traffic_metrics_ts
             WHERE ts >= ? AND src_ip IS NOT NULL AND src_ip != ''
             GROUP BY src_ip
-            HAVING total_icmp >= 80
+            HAVING total_icmp >= 30
             ORDER BY total_icmp DESC
             """,
             (cutoff,),
         )
         rows = cursor.fetchall()
 
+        local_ips = get_all_local_ips()
         flooders = []
         for r in rows:
             src_ip, total_icmp, peak_pps = r[0], r[1], r[2]
-            # NetWatch probe generates ~12 pings per minute; real storm is 80+ pings/min with peak pps > 15
-            if (peak_pps or 0) >= 15.0 and total_icmp >= 100:
+            if src_ip.lower() in local_ips or src_ip.startswith("169.254.") or (gw_ip and src_ip == gw_ip):
+                continue
+            if (peak_pps or 0) >= 3.0 and total_icmp >= 30:
                 flooders.append({
                     "src_ip": src_ip,
                     "total_icmp": total_icmp,
                     "peak_pps": round(peak_pps or 0, 1),
                 })
 
-        if flooders:
-            top = flooders[0]
-            net_ctx = {"ip": net_info.ip, "gateway": net_info.gateway, "subnet": net_info.subnet, "interface": net_info.interface}
-            candidate = {"src_ip": top["src_ip"], "alert_type": "icmp_flood", "details": top, "message": f"{top['total_icmp']} ICMP frames"}
-            verdict = verify_anomaly_with_gemini(candidate, net_ctx)
+        if recent_alerts or flooders:
+            top_ip = flooders[0]["src_ip"] if flooders else recent_alerts[0].get("src_ip", "Unknown")
+            is_crit = any(a.get("severity") == "high" for a in recent_alerts) or any(f["total_icmp"] >= 60 for f in flooders)
+            top_msg = recent_alerts[0].get("message") if recent_alerts else f"{flooders[0]['total_icmp']} ICMP packets detected"
 
-            if verdict.get("is_genuine_attack", True):
-                return {
-                    "check": "icmp_flood",
-                    "name": "ICMP Storm / Ping Flood Audit",
-                    "status": "WARNING",
-                    "score_penalty": 20,
-                    "summary": f"Elevated ICMP flood rate from {top['src_ip']} ({top['total_icmp']} ICMP frames).",
-                    "details": flooders,
-                    "remediation": {
-                        "windows": f"New-NetFirewallRule -DisplayName 'Block-ICMP-{top['src_ip']}' -Direction Inbound -Protocol ICMPv4 -RemoteAddress {top['src_ip']} -Action Block",
-                        "linux": f"iptables -A INPUT -p icmp -s {top['src_ip']} -j DROP",
-                        "system": "Rate limit ICMP on your host or router to prevent denial-of-service degradation.",
-                    },
-                }
+            return {
+                "check": "icmp_flood",
+                "name": "ICMP Storm / Ping Flood Audit",
+                "status": "CRITICAL" if is_crit else "WARNING",
+                "score_penalty": 30 if is_crit else 20,
+                "summary": f"Elevated ICMP flood rate from {top_ip}: {top_msg}",
+                "details": flooders if flooders else recent_alerts,
+                "remediation": {
+                    "windows": f"New-NetFirewallRule -DisplayName 'Block-ICMP-{top_ip}' -Direction Inbound -Protocol ICMPv4 -RemoteAddress {top_ip} -Action Block",
+                    "linux": f"iptables -A INPUT -p icmp -s {top_ip} -j DROP",
+                    "system": "Rate limit ICMP on your host or router to prevent denial-of-service degradation.",
+                },
+            }
 
         return {
             "check": "icmp_flood",
@@ -244,19 +287,34 @@ def check_icmp_storm_audit(minutes: float = 1.0, db_path: Optional[str] = None) 
         conn.close()
 
 
-def check_bandwidth_drain_audit(minutes: float = 1.0, db_path: Optional[str] = None) -> Dict[str, Any]:
+def check_bandwidth_drain_audit(minutes: float = 10.0, db_path: Optional[str] = None) -> Dict[str, Any]:
     """Audit for abnormal bandwidth consumption surges or covert data exfiltration."""
     cutoff = time.time() - (minutes * 60.0)
     net_info = settings.get_network_info(refresh=False)
+    gw_ip = net_info.gateway
 
     conn = get_connection(db_path)
     try:
         cursor = conn.cursor()
+
+        # 1. Correlate with active / unresolved alerts in ai_alerts
+        cursor.execute(
+            """
+            SELECT id, alert_type, src_ip, severity, score, message, ts, details_json
+            FROM ai_alerts
+            WHERE alert_type = 'bandwidth_hog' AND (acknowledged = 0 OR ts >= ?)
+            ORDER BY ts DESC LIMIT 5
+            """,
+            (cutoff,),
+        )
+        recent_alerts = [dict(r) for r in cursor.fetchall()]
+
+        # 2. Correlate with traffic_metrics
         cursor.execute(
             """
             SELECT src_ip, SUM(bytes_out) as total_out, SUM(bytes_in) as total_in,
                    MAX(pps) as peak_pps
-            FROM traffic_metrics
+            FROM traffic_metrics INDEXED BY idx_traffic_metrics_ts
             WHERE ts >= ? AND src_ip IS NOT NULL AND src_ip != ''
             GROUP BY src_ip
             ORDER BY total_out DESC
@@ -266,11 +324,13 @@ def check_bandwidth_drain_audit(minutes: float = 1.0, db_path: Optional[str] = N
         )
         rows = cursor.fetchall()
 
+        local_ips = get_all_local_ips()
         hogs = []
         for r in rows:
             src_ip, total_out, total_in, peak_pps = r[0], r[1], r[2], r[3]
-            # Trigger only on massive sustained outbound surge (> 30 MB in 60 seconds with peak pps > 80)
-            if (total_out or 0) >= 30_000_000 and (peak_pps or 0) >= 80:
+            if src_ip.lower() in local_ips or src_ip.startswith("169.254.") or (gw_ip and src_ip == gw_ip):
+                continue
+            if (total_out or 0) >= settings.rule_bandwidth_hog_bytes and (peak_pps or 0) >= 20:
                 hogs.append({
                     "src_ip": src_ip,
                     "mb_uploaded": round(total_out / 1_000_000, 2),
@@ -278,17 +338,20 @@ def check_bandwidth_drain_audit(minutes: float = 1.0, db_path: Optional[str] = N
                     "peak_pps": round(peak_pps or 0, 1),
                 })
 
-        if hogs:
-            top = hogs[0]
+        if recent_alerts or hogs:
+            top_ip = hogs[0]["src_ip"] if hogs else recent_alerts[0].get("src_ip", "Unknown")
+            is_crit = any(a.get("severity") == "high" for a in recent_alerts) or any(h["mb_uploaded"] >= 15.0 for h in hogs)
+            top_msg = recent_alerts[0].get("message") if recent_alerts else f"{hogs[0]['mb_uploaded']} MB uploaded"
+
             return {
                 "check": "bandwidth_drain",
                 "name": "Bandwidth Drain & Exfiltration Audit",
-                "status": "WARNING",
-                "score_penalty": 15,
-                "summary": f"Unusual sustained outbound throughput surge from {top['src_ip']} ({top['mb_uploaded']} MB uploaded in 60s).",
-                "details": hogs,
+                "status": "CRITICAL" if is_crit else "WARNING",
+                "score_penalty": 20 if is_crit else 15,
+                "summary": f"Unusual sustained outbound throughput surge from {top_ip}: {top_msg}",
+                "details": hogs if hogs else recent_alerts,
                 "remediation": {
-                    "windows": f"Get-NetTCPConnection -RemoteAddress {top['src_ip']} | Select-Object OwningProcess, LocalAddress, RemotePort",
+                    "windows": f"Get-NetTCPConnection -RemoteAddress {top_ip} | Select-Object OwningProcess, LocalAddress, RemotePort",
                     "linux": "iftop -i any or nethogs to trace high throughput process.",
                     "system": "Check for unauthorized streaming, large file uploads, or background P2P synchronization.",
                 },
@@ -400,11 +463,9 @@ def run_comprehensive_security_audit(check_type: str = "all", db_path: Optional[
     }
 
     results = []
-    if check_type in checks_map:
-        results.append(checks_map[check_type](db_path=db_path))
-    else:
-        for fn in checks_map.values():
-            results.append(fn(db_path=db_path))
+    # Always evaluate all checks so the full defense suite and posture score are maintained!
+    for fn in checks_map.values():
+        results.append(fn(db_path=db_path))
 
     total_penalty = sum(r.get("score_penalty", 0) for r in results)
     security_score = max(0, 100 - total_penalty)

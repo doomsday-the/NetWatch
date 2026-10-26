@@ -321,7 +321,7 @@ function NetWatchApp() {
     setIsAuditing(true);
     addToast('Executing defensive security audit across live traffic...', 'info');
     try {
-      const res = await axios.post(`${API_BASE}/api/security/audit`, { check_type: checkType }, { timeout: 15000 });
+      const res = await axios.post(`${API_BASE}/api/security/audit`, { check_type: checkType }, { timeout: 30000 });
       setAuditResult(res.data);
       addToast(`Security Audit Complete: Score ${res.data?.security_score}/100 (${res.data?.posture_label})`, 'success');
     } catch (err) {
@@ -390,7 +390,7 @@ function NetWatchApp() {
     setIsScanning(true);
     addToast('Broadcasting high-speed ARP sweep across subnet...', 'info');
     try {
-      const res = await axios.post(`${API_BASE}/api/discovery/scan?wait=true`, {}, { timeout: 15000 });
+      const res = await axios.post(`${API_BASE}/api/discovery/scan?wait=true`, {}, { timeout: 30000 });
       if (res.data?.devices) {
         setDevices(res.data.devices);
       }

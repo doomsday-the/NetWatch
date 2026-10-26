@@ -198,42 +198,42 @@ class Settings(BaseSettings):
 
     # Heuristic Rule-Based Threat Detection Thresholds
     rule_port_scan_threshold: int = Field(
-        default=100,
+        default=25,
         validation_alias=AliasChoices("NETWATCH_RULE_PORT_SCAN_THRESHOLD", "rule_port_scan_threshold"),
         description="Unique destination ports threshold to trigger port_scan alert",
     )
     rule_port_scan_high_threshold: int = Field(
-        default=250,
+        default=75,
         validation_alias=AliasChoices("NETWATCH_RULE_PORT_SCAN_HIGH", "rule_port_scan_high_threshold"),
         description="Unique destination ports threshold for high severity port_scan",
     )
     rule_syn_flood_count: int = Field(
-        default=200,
+        default=60,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_COUNT", "rule_syn_flood_count"),
         description="TCP SYN count threshold to trigger syn_flood alert",
     )
     rule_syn_flood_ratio: float = Field(
-        default=0.85,
+        default=0.70,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_RATIO", "rule_syn_flood_ratio"),
         description="SYN-to-TCP ratio threshold to trigger syn_flood alert",
     )
     rule_syn_flood_high_count: int = Field(
-        default=250,
+        default=150,
         validation_alias=AliasChoices("NETWATCH_RULE_SYN_HIGH_COUNT", "rule_syn_flood_high_count"),
         description="TCP SYN count threshold for high severity syn_flood",
     )
     rule_icmp_flood_count: int = Field(
-        default=150,
+        default=30,
         validation_alias=AliasChoices("NETWATCH_RULE_ICMP_COUNT", "rule_icmp_flood_count"),
         description="ICMP packet count threshold to trigger icmp_flood alert",
     )
     rule_icmp_flood_high_count: int = Field(
-        default=300,
+        default=60,
         validation_alias=AliasChoices("NETWATCH_RULE_ICMP_HIGH_COUNT", "rule_icmp_flood_high_count"),
         description="ICMP packet count threshold for high severity icmp_flood",
     )
     rule_bandwidth_hog_bytes: int = Field(
-        default=4_000_000,
+        default=2_000_000,
         validation_alias=AliasChoices("NETWATCH_RULE_BANDWIDTH_BYTES", "rule_bandwidth_hog_bytes"),
         description="Bytes transmitted threshold in 5s window to trigger bandwidth_hog alert (~6.4 Mbps)",
     )
