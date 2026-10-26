@@ -42,13 +42,14 @@ def is_local_subnet_ip(ip_str: str, subnet_str: Optional[str] = None) -> bool:
 
             return ip.is_private
 
+        if ip.is_private:
+            return True
+
         if subnet_str:
-
             net = ipaddress.ip_network(subnet_str, strict=False)
-
             return ip in net
 
-        return ip.is_private
+        return False
 
     except Exception:
 

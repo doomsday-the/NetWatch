@@ -165,10 +165,17 @@ class PacketSnifferService:
 
         while not self.stop_event.is_set() or not self.flow_queue.empty():
             try:
-                # Wait for next item with short timeout
-                record = self.flow_queue.get(timeout=0.2)
+                record = self.flow_queue.get(timeout=0.05)
                 batch.append(record)
                 self.flow_queue.task_done()
+                # Fast-drain queue up to batch size without sleeping
+                while len(batch) < settings.batch_size:
+                    try:
+                        record = self.flow_queue.get_nowait()
+                        batch.append(record)
+                        self.flow_queue.task_done()
+                    except queue.Empty:
+                        break
             except queue.Empty:
                 pass
 

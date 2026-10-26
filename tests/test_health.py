@@ -30,21 +30,21 @@ def test_health_score_ideal_conditions() -> None:
 
 
 def test_alert_penalties_and_capping() -> None:
-    """Verify alert severity weighting and 45-point cap."""
-    # 1 High alert = 20 pts penalty -> score 80.0
+    """Verify alert severity weighting (25 high, 15 med, 5 low) and 60-point cap."""
+    # 1 High alert = 25 pts penalty -> score 75.0
     score1, p1 = compute_health_score_from_penalties(high_alerts=1)
-    assert score1 == 80.0
-    assert p1["alert_penalty"] == 20.0
+    assert score1 == 75.0
+    assert p1["alert_penalty"] == 25.0
 
-    # 1 Medium + 2 Low = 10 + 8 = 18 pts penalty -> score 82.0
+    # 1 Medium + 2 Low = 15 + 10 = 25 pts penalty -> score 75.0
     score2, p2 = compute_health_score_from_penalties(medium_alerts=1, low_alerts=2)
-    assert score2 == 82.0
-    assert p2["alert_penalty"] == 18.0
+    assert score2 == 75.0
+    assert p2["alert_penalty"] == 25.0
 
-    # 5 High alerts = 100 pts -> capped at 45.0 pts penalty -> score 55.0
+    # 5 High alerts = 125 pts -> capped at 60.0 pts penalty -> score 40.0
     score3, p3 = compute_health_score_from_penalties(high_alerts=5)
-    assert score3 == 55.0
-    assert p3["alert_penalty"] == 45.0
+    assert score3 == 40.0
+    assert p3["alert_penalty"] == 60.0
 
 
 def test_packet_loss_penalty_and_capping() -> None:
@@ -86,7 +86,7 @@ def test_worst_case_clamping_to_zero() -> None:
         high_alerts=10,
     )
     assert score == 0.0
-    assert penalties["total_penalty"] == 100.0
+    assert penalties["total_penalty"] == 115.0
     assert get_health_label(score) == "Critical"
 
 
@@ -141,9 +141,9 @@ def test_evaluate_and_record_health_integration(tmp_path: Path) -> None:
     # Evaluate health
     health_result = evaluate_and_record_health(window_ts=now, db_path=db_file)
 
-    # Expected: 100 - (10.0 alert + 7.5 loss + 5.0 latency) = 77.5
-    assert health_result["score"] == pytest.approx(77.5, abs=0.5)
+    # Expected: 100 - (15.0 alert + 7.5 loss + 5.0 latency) = 72.5
+    assert health_result["score"] == pytest.approx(72.5, abs=0.5)
 
     status = get_health_status(db_path=db_file)
-    assert status["score"] == pytest.approx(77.5, abs=0.5)
+    assert status["score"] == pytest.approx(72.5, abs=0.5)
     assert status["label"] == "Degraded"
