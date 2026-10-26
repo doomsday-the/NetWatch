@@ -330,7 +330,7 @@ def run_simulated_capture(service: PacketSnifferService) -> None:
     gateway_ip = settings.resolved_gateway or "172.17.48.1"
 
     # Active LAN hosts
-    lan_hosts = [local_ip, gateway_ip, "172.17.48.15", "172.17.48.22", "172.17.48.33"]
+    lan_hosts = [local_ip, gateway_ip]
     # Remote WAN internet hosts
     wan_hosts = ["8.8.8.8", "1.1.1.1", "142.250.190.46", "157.240.22.35", "104.244.42.1", "13.107.42.14"]
     sample_ports = [80, 443, 53, 22, 8080, 3306, 5432]

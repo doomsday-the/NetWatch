@@ -72,7 +72,7 @@ def check_syn_flood_audit(minutes: float = 10.0, db_path: Optional[str] = None) 
             """,
             (cutoff,),
         )
-        recent_alerts = [dict(r) for r in cursor.fetchall()]
+        recent_alerts = [dict(r) for r in cursor.fetchall() if is_local_subnet_ip(r['src_ip'], net_info.subnet)]
 
         # 2. Correlate with traffic_metrics
         cursor.execute(
@@ -95,6 +95,8 @@ def check_syn_flood_audit(minutes: float = 10.0, db_path: Optional[str] = None) 
             max_ports = r[4] if len(r) > 4 and r[4] is not None else 0
             ratio = (total_syn / total_tcp) if total_tcp and total_tcp > 0 else 1.0
             if src_ip.lower() in local_ips or src_ip.startswith("169.254.") or (gw_ip and src_ip == gw_ip):
+                continue
+            if not is_local_subnet_ip(src_ip, net_info.subnet):
                 continue
 
             # If traffic was distributed across many ports and no syn_flood alert exists, it is a port scan
@@ -248,7 +250,7 @@ def check_icmp_storm_audit(minutes: float = 10.0, db_path: Optional[str] = None)
             """,
             (cutoff,),
         )
-        recent_alerts = [dict(r) for r in cursor.fetchall()]
+        recent_alerts = [dict(r) for r in cursor.fetchall() if is_local_subnet_ip(r['src_ip'], net_info.subnet)]
 
         # 2. Correlate with traffic_metrics
         cursor.execute(
@@ -269,6 +271,8 @@ def check_icmp_storm_audit(minutes: float = 10.0, db_path: Optional[str] = None)
         for r in rows:
             src_ip, total_icmp, peak_pps = r[0], r[1], r[2]
             if src_ip.lower() in local_ips or src_ip.startswith("169.254.") or (gw_ip and src_ip == gw_ip):
+                continue
+            if not is_local_subnet_ip(src_ip, net_info.subnet):
                 continue
             if (peak_pps or 0) >= 3.0 and total_icmp >= 30:
                 flooders.append({

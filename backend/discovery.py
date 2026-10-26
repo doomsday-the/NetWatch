@@ -484,7 +484,8 @@ def arp_sweep_scapy(
         srp_kwargs: Dict[str, Any] = {
             "timeout": effective_timeout,
             "verbose": 0,
-            "retry": 1,
+            "retry": 2,
+            "timeout": max(effective_timeout, 2.0),
         }
         if interface and interface.lower() != "auto":
             srp_kwargs["iface"] = interface
@@ -557,6 +558,12 @@ def run_discovery_sweep(
         interface=network.interface,
         timeout=settings.arp_timeout_seconds,
     )
+
+    # Merge system ARP cache so active OS-communicating hosts are never missed
+    sys_pairs = _parse_system_arp_cache(network.subnet)
+    for sp in sys_pairs:
+        if not any(dp[1] == sp[1] for dp in discovered_pairs):
+            discovered_pairs.append(sp)
 
     # Ensure local machine is present in discovered inventory
     if network.ip and network.mac:
